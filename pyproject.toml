@@ -10,7 +10,8 @@ readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
 authors = [
-    {name = "DeerHide", email = ""}
+    {name = "DeerHide", email = "developers@deerhide.com"},
+    {name = "MirageCentury", email = "victorien.vanroye@gmail.com"}
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

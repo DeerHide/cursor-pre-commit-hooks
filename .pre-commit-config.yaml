@@ -14,7 +14,7 @@ repos:
       - id: changelog-version
         name: Changelog Version
         entry: changelog-version
-        language: system
+        language: python
         stages: [commit-msg]
         pass_filenames: false
 

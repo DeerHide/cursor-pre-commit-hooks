@@ -36,6 +36,10 @@ dev = [
     "mypy>=1.0.0",
 ]
 
+[project.scripts]
+changelog-version = "hooks.changelog_version:main"
+auto-tag = "hooks.auto_tag:main"
+
 [tool.setuptools]
 packages = ["hooks"]
 

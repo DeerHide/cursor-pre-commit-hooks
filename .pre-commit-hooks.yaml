@@ -1,0 +1,9 @@
+- id: changelog-version
+  name: Changelog Version Bump
+  description: Update version and changelog using cursor-agent AI
+  entry: changelog-version
+  language: python
+  stages: [commit-msg]
+  pass_filenames: false
+  always_run: true
+

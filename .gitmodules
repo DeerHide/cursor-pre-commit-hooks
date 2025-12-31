@@ -1,0 +1,3 @@
+[submodule ".cursor/rules/cursor-rules"]
+	path = .cursor/rules/cursor-rules
+	url = git@github.com:DeerHide/cursor-rules.git

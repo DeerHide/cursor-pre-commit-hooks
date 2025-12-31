@@ -7,3 +7,12 @@
   pass_filenames: false
   always_run: true
 
+- id: auto-tag
+  name: Auto Tag
+  description: Create git tag based on version in pyproject.toml
+  entry: auto-tag
+  language: python
+  stages: [post-commit]
+  pass_filenames: false
+  always_run: true
+

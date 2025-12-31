@@ -39,6 +39,27 @@ pre-commit install
 
 ## Available Hooks
 
+### changelog-version
+
+Automatically updates version and changelog based on commitizen-formatted commit messages:
+- Analyzes commit message format
+- Determines semantic version bump (major/minor/patch)
+- Updates `pyproject.toml` version
+- Updates or creates `CHANGELOG.md`
+- Stages modified files
+
+Runs at `commit-msg` stage automatically.
+
+### auto-tag
+
+Creates git tags based on the version in `pyproject.toml` (typically updated by `changelog-version`):
+- Reads version from `pyproject.toml`
+- Checks if tag already exists
+- Creates git tag with format `v{version}` (e.g., `v1.2.3`)
+- Skips if tag already exists
+
+Runs automatically at `post-commit` stage when installed via pre-commit.
+
 ### cursor-check
 
 Performs basic checks on Python files:
@@ -53,10 +74,56 @@ Validates Python code according to custom rules:
 - Code structure checks
 - Custom validation rules (customizable)
 
+## Setting up auto-tag
+
+The `auto-tag` hook uses pre-commit's built-in support for post-commit hooks. According to the [pre-commit documentation](https://pre-commit.com/#post-commit), you can install it as a post-commit hook:
+
+1. Add the hook to your `.pre-commit-config.yaml`:
+
+```yaml
+repos:
+  - repo: https://github.com/deerhide/cursor-pre-commit-hooks
+    rev: v0.1.0  # Use the tag or branch you want
+    hooks:
+      - id: changelog-version
+      - id: auto-tag
+```
+
+2. Install the post-commit hook:
+
+```bash
+pre-commit install --hook-type post-commit
+```
+
+Now `auto-tag` will automatically run after every commit when `changelog-version` updates the version.
+
+### Manual Execution
+
+You can also run `auto-tag` manually after commits that trigger version bumps:
+
+```bash
+auto-tag
+```
+
+### Auto-tag Options
+
+```bash
+# Custom tag prefix (default: "v")
+auto-tag --tag-prefix "release-"
+
+# Custom tag message
+auto-tag --message "Release version {version}"
+
+# Fail if tag already exists (default: skip silently)
+auto-tag --no-skip-if-exists
+```
+
 ## Customization
 
 Edit the hook files in `hooks/` directory to add your custom validation logic:
 
+- `hooks/changelog_version.py` - Version and changelog updates
+- `hooks/auto_tag.py` - Git tag creation
 - `hooks/cursor_check.py` - Basic file checks
 - `hooks/cursor_validate.py` - Code validation rules
 
@@ -99,7 +166,9 @@ pytest --cov=hooks --cov-report=html
 cursor-pre-commit-hooks/
 ├── hooks/
 │   ├── __init__.py
-│   ├── cursor_check.py      # Basic file checks
+│   ├── changelog_version.py  # Version and changelog updates
+│   ├── auto_tag.py           # Git tag creation
+│   ├── cursor_check.py       # Basic file checks
 │   └── cursor_validate.py    # Code validation
 ├── .pre-commit-hooks.yaml    # Hook definitions for pre-commit
 ├── pyproject.toml            # Project configuration
@@ -125,7 +194,7 @@ cursor-pre-commit-hooks/
   pass_filenames: true
 ```
 
-4. Update `setup.py` or `pyproject.toml` to register the entry point if needed
+4. Update `setup.py` to register the entry point in `entry_points.console_scripts`
 
 ## License
 

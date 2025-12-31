@@ -70,3 +70,5 @@ Thumbs.db
 
 # Ruff
 .ruff_cache/
+.pre-commit-config.yaml
+poetry.lock

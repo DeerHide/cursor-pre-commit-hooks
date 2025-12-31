@@ -6,8 +6,10 @@ and creates a git tag if one doesn't already exist for that version.
 
 import subprocess
 import sys
+import traceback
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Optional
 
 # Try to import tomllib (Python 3.11+) or fall back to tomli
 try:
@@ -60,12 +62,14 @@ def get_current_version(pyproject_path: Path) -> str:
 
     # Try PEP 621 format first: [project] -> version
     if "project" in data and "version" in data["project"]:
-        return data["project"]["version"]
+        version: Any = data["project"]["version"]
+        return str(version)
 
     # Try Poetry format: [tool.poetry] -> version
     if "tool" in data and "poetry" in data["tool"]:
         if "version" in data["tool"]["poetry"]:
-            return data["tool"]["poetry"]["version"]
+            version = data["tool"]["poetry"]["version"]
+            return str(version)
 
     # Neither format found - provide helpful error
     available_keys = ", ".join(data.keys())
@@ -130,7 +134,7 @@ def get_head_commit_hash() -> str:
         raise RuntimeError("Failed to get HEAD commit hash") from e
 
 
-def create_tag(tag_name: str, message: str | None = None) -> None:
+def create_tag(tag_name: str, message: Optional[str] = None) -> None:
     """Create a git tag.
 
     Args:
@@ -165,7 +169,82 @@ def format_tag_name(version: str, prefix: str = "v") -> str:
     return f"{prefix}{version}"
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def log_error(message: str, exception: Optional[Exception] = None) -> None:
+    """Log an error with full context.
+
+    Args:
+        message: Error message.
+        exception: Optional exception to log details from.
+    """
+    print(f"\n{'='*60}", file=sys.stderr)
+    print(f"ERROR: {message}", file=sys.stderr)
+    if exception:
+        print(f"Exception type: {type(exception).__name__}", file=sys.stderr)
+        print(f"Exception message: {str(exception)}", file=sys.stderr)
+        print("\nTraceback:", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+    print(f"{'='*60}\n", file=sys.stderr)
+
+
+def verify_tag_creation(
+    tag_name: str,
+    expected_version: str,
+    pyproject_path: Path,
+) -> tuple[bool, list[str]]:
+    """Verify that the tag was created successfully.
+
+    Args:
+        tag_name: The tag name that should exist.
+        expected_version: Expected version in pyproject.toml.
+        pyproject_path: Path to pyproject.toml.
+
+    Returns:
+        Tuple of (success: bool, issues: list[str]).
+    """
+    issues: list[str] = []
+
+    # Check tag exists
+    if not tag_exists(tag_name):
+        issues.append(f"Tag {tag_name} does not exist after creation")
+
+    # Check pyproject.toml version matches
+    try:
+        actual_version = get_current_version(pyproject_path)
+        if actual_version != expected_version:
+            issues.append(
+                f"pyproject.toml version mismatch: expected {expected_version}, "
+                f"got {actual_version}"
+            )
+    except Exception as e:
+        issues.append(f"Failed to read version from pyproject.toml: {e}")
+
+    # Check tag points to HEAD
+    try:
+        tag_hash_result = subprocess.run(
+            ["git", "rev-parse", tag_name],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        tag_hash = tag_hash_result.stdout.strip()
+
+        head_hash_result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        head_hash = head_hash_result.stdout.strip()
+
+        if tag_hash != head_hash:
+            issues.append(f"Tag {tag_name} points to {tag_hash[:8]}, but HEAD is {head_hash[:8]}")
+    except subprocess.CalledProcessError as e:
+        issues.append(f"Failed to verify tag points to HEAD: {e}")
+
+    return len(issues) == 0, issues
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
     """Run the auto-tag hook.
 
     This hook reads the version from pyproject.toml and creates a git tag
@@ -186,7 +265,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Parse arguments
     tag_prefix = "v"
     skip_if_exists = True
-    tag_message: str | None = None
+    tag_message: Optional[str] = None
 
     i = 0
     while i < len(argv):
@@ -207,53 +286,91 @@ def main(argv: Sequence[str] | None = None) -> int:
             i += 1
 
     try:
-        git_root = get_git_root()
-    except RuntimeError as e:
-        print(f"Error: {e}")
-        return 1
-
-    # Read version from pyproject.toml
-    pyproject_path = git_root / "pyproject.toml"
-    try:
-        version = get_current_version(pyproject_path)
-    except (KeyError, FileNotFoundError) as e:
-        print(f"Error reading version from pyproject.toml: {e}")
-        return 1
-
-    # Format tag name
-    tag_name = format_tag_name(version, prefix=tag_prefix)
-
-    # Check if tag already exists
-    if tag_exists(tag_name):
-        if skip_if_exists:
-            print(f"Info: Tag {tag_name} already exists, skipping.")
-            return 0
-        else:
-            print(f"Error: Tag {tag_name} already exists.")
+        try:
+            git_root = get_git_root()
+        except RuntimeError as e:
+            log_error("Failed to get git repository root", e)
             return 1
 
-    # Get HEAD commit hash for tag message
-    try:
-        commit_hash = get_head_commit_hash()
-    except RuntimeError as e:
-        print(f"Error: {e}")
-        return 1
+        # Read version from pyproject.toml
+        pyproject_path = git_root / "pyproject.toml"
+        if not pyproject_path.exists():
+            log_error(f"pyproject.toml not found at {pyproject_path}")
+            return 1
 
-    # Create tag message if not provided
-    if tag_message is None:
-        tag_message = f"Release {tag_name}\n\nAuto-generated tag from changelog_version hook."
+        try:
+            version = get_current_version(pyproject_path)
+            print(f"Read version from pyproject.toml: {version}")
+        except (KeyError, FileNotFoundError) as e:
+            log_error("Failed to read version from pyproject.toml", e)
+            return 1
 
-    # Create the tag
-    try:
-        create_tag(tag_name, tag_message)
-        print(f"Successfully created tag: {tag_name}")
-        print(f"Tag points to commit: {commit_hash}")
-        return 0
-    except RuntimeError as e:
-        print(f"Error: {e}")
+        # Format tag name
+        tag_name = format_tag_name(version, prefix=tag_prefix)
+        print(f"Tag name: {tag_name}")
+
+        # Check if tag already exists
+        if tag_exists(tag_name):
+            if skip_if_exists:
+                print(f"Info: Tag {tag_name} already exists, skipping.")
+                return 0
+            else:
+                log_error(f"Tag {tag_name} already exists and --no-skip-if-exists is set")
+                return 1
+
+        # Get HEAD commit hash for tag message
+        try:
+            commit_hash = get_head_commit_hash()
+            print(f"HEAD commit: {commit_hash}")
+        except RuntimeError as e:
+            log_error("Failed to get HEAD commit hash", e)
+            return 1
+
+        # Create tag message if not provided
+        if tag_message is None:
+            tag_message = f"Release {tag_name}\n\nAuto-generated tag from changelog_version hook."
+
+        # Create the tag
+        print(f"\nCreating tag: {tag_name}")
+        try:
+            create_tag(tag_name, tag_message)
+            print("  ✓ Tag created successfully")
+        except RuntimeError as e:
+            log_error("Failed to create tag", e)
+            return 1
+        except Exception as e:
+            log_error("Unexpected error during tag creation", e)
+            return 1
+
+        # Self-verification: Final check
+        print("\n" + "=" * 60)
+        print("Self-verification:")
+        print("=" * 60)
+        success, issues = verify_tag_creation(
+            tag_name=tag_name,
+            expected_version=version,
+            pyproject_path=pyproject_path,
+        )
+
+        if success:
+            print("  ✓ All checks passed!")
+            print(f"\n✓ Successfully created tag: {tag_name}")
+            print(f"✓ Tag points to commit: {commit_hash}")
+            print(f"✓ Version: {version}")
+            print("=" * 60 + "\n")
+            return 0
+        else:
+            print("  ✗ Issues found:")
+            for issue in issues:
+                print(f"    - {issue}")
+            print("=" * 60 + "\n")
+            log_error("Hook self-verification failed", None)
+            return 1
+
+    except Exception as e:
+        log_error("Unexpected error in main hook execution", e)
         return 1
 
 
 if __name__ == "__main__":
     sys.exit(main())
-

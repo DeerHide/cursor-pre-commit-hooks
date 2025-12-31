@@ -40,6 +40,8 @@ def get_git_root() -> Path:
 def get_current_version(pyproject_path: Path) -> str:
     """Read the current version from pyproject.toml.
 
+    Supports both PEP 621 format ([project]) and Poetry format ([tool.poetry]).
+
     Args:
         pyproject_path: Path to pyproject.toml.
 
@@ -56,7 +58,34 @@ def get_current_version(pyproject_path: Path) -> str:
     with open(pyproject_path, "rb") as f:
         data = tomllib.load(f)
 
-    return data["project"]["version"]
+    # Try PEP 621 format first: [project] -> version
+    if "project" in data and "version" in data["project"]:
+        return data["project"]["version"]
+
+    # Try Poetry format: [tool.poetry] -> version
+    if "tool" in data and "poetry" in data["tool"]:
+        if "version" in data["tool"]["poetry"]:
+            return data["tool"]["poetry"]["version"]
+
+    # Neither format found - provide helpful error
+    available_keys = ", ".join(data.keys())
+    if "project" in data:
+        project_keys = ", ".join(data["project"].keys())
+        raise KeyError(
+            f"'version' field not found in [project] section of pyproject.toml. "
+            f"Available keys in [project]: {project_keys}"
+        )
+    if "tool" in data and "poetry" in data["tool"]:
+        poetry_keys = ", ".join(data["tool"]["poetry"].keys())
+        raise KeyError(
+            f"'version' field not found in [tool.poetry] section of pyproject.toml. "
+            f"Available keys in [tool.poetry]: {poetry_keys}"
+        )
+
+    raise KeyError(
+        f"Neither [project] nor [tool.poetry] section found in pyproject.toml. "
+        f"Available top-level sections: {available_keys}"
+    )
 
 
 def tag_exists(tag_name: str) -> bool:

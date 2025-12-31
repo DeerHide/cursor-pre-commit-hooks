@@ -146,6 +146,8 @@ def parse_commitizen_message(
 def get_current_version(pyproject_path: Path) -> str:
     """Read the current version from pyproject.toml.
 
+    Supports both PEP 621 format ([project]) and Poetry format ([tool.poetry]).
+
     Args:
         pyproject_path: Path to pyproject.toml.
 
@@ -158,7 +160,34 @@ def get_current_version(pyproject_path: Path) -> str:
     with open(pyproject_path, "rb") as f:
         data = tomllib.load(f)
 
-    return data["project"]["version"]
+    # Try PEP 621 format first: [project] -> version
+    if "project" in data and "version" in data["project"]:
+        return data["project"]["version"]
+
+    # Try Poetry format: [tool.poetry] -> version
+    if "tool" in data and "poetry" in data["tool"]:
+        if "version" in data["tool"]["poetry"]:
+            return data["tool"]["poetry"]["version"]
+
+    # Neither format found - provide helpful error
+    available_keys = ", ".join(data.keys())
+    if "project" in data:
+        project_keys = ", ".join(data["project"].keys())
+        raise KeyError(
+            f"'version' field not found in [project] section of pyproject.toml. "
+            f"Available keys in [project]: {project_keys}"
+        )
+    if "tool" in data and "poetry" in data["tool"]:
+        poetry_keys = ", ".join(data["tool"]["poetry"].keys())
+        raise KeyError(
+            f"'version' field not found in [tool.poetry] section of pyproject.toml. "
+            f"Available keys in [tool.poetry]: {poetry_keys}"
+        )
+
+    raise KeyError(
+        f"Neither [project] nor [tool.poetry] section found in pyproject.toml. "
+        f"Available top-level sections: {available_keys}"
+    )
 
 
 def calculate_new_version(current: str, bump: VersionBump) -> str:
@@ -251,7 +280,32 @@ Then add the first version entry:
 
 Write only the markdown content, nothing else."""
 
-    run_cursor_agent(prompt, changelog_path)
+    try:
+        output = run_cursor_agent(prompt, changelog_path)
+        # If cursor-agent didn't create the file, write it ourselves
+        if not changelog_path.exists() and output:
+            changelog_path.write_text(output, encoding="utf-8")
+        elif not changelog_path.exists():
+            # Fallback: create the file manually if cursor-agent didn't work
+            content = f"""{CHANGELOG_HEADER}## [{version}] - {today}
+
+### {section}
+- {description}
+"""
+            if is_breaking:
+                content += "\n### Breaking Changes\n- **BREAKING CHANGE**: This is a breaking change.\n"
+            changelog_path.write_text(content, encoding="utf-8")
+    except RuntimeError as e:
+        # Fallback: create the file manually if cursor-agent fails
+        print(f"Warning: cursor-agent failed, creating changelog manually: {e}")
+        content = f"""{CHANGELOG_HEADER}## [{version}] - {today}
+
+### {section}
+- {description}
+"""
+        if is_breaking:
+            content += "\n### Breaking Changes\n- **BREAKING CHANGE**: This is a breaking change.\n"
+        changelog_path.write_text(content, encoding="utf-8")
 
 
 def update_changelog(
@@ -281,21 +335,167 @@ Add it at the top (after the header), before any existing version entries:
 Keep all existing content intact. Only add the new version section.
 The previous version was {current_version}."""
 
-    run_cursor_agent(prompt, changelog_path)
+    try:
+        output = run_cursor_agent(prompt, changelog_path)
+        # If cursor-agent didn't update the file, do it manually
+        if output and changelog_path.exists():
+            # Read current content
+            current_content = changelog_path.read_text(encoding="utf-8")
+            # If output contains the new version entry, use it
+            if f"[{version}]" in output:
+                changelog_path.write_text(output, encoding="utf-8")
+            else:
+                # Fallback: manually prepend the new version entry
+                new_entry = f"""## [{version}] - {today}
+
+### {section}
+- {description}
+"""
+                if is_breaking:
+                    new_entry += "\n### Breaking Changes\n- **BREAKING CHANGE**: This is a breaking change.\n"
+                new_entry += "\n"
+                
+                # Find where to insert (after header, before first version)
+                lines = current_content.split("\n")
+                insert_pos = 0
+                for i, line in enumerate(lines):
+                    if line.startswith("## ["):
+                        insert_pos = i
+                        break
+                    if i > 20:  # Safety limit
+                        insert_pos = len(lines)
+                        break
+                
+                lines.insert(insert_pos, new_entry.strip())
+                changelog_path.write_text("\n".join(lines), encoding="utf-8")
+    except RuntimeError as e:
+        # Fallback: update manually if cursor-agent fails
+        print(f"Warning: cursor-agent failed, updating changelog manually: {e}")
+        current_content = changelog_path.read_text(encoding="utf-8")
+        new_entry = f"""## [{version}] - {today}
+
+### {section}
+- {description}
+"""
+        if is_breaking:
+            new_entry += "\n### Breaking Changes\n- **BREAKING CHANGE**: This is a breaking change.\n"
+        new_entry += "\n"
+        
+        # Find where to insert (after header, before first version)
+        lines = current_content.split("\n")
+        insert_pos = 0
+        for i, line in enumerate(lines):
+            if line.startswith("## ["):
+                insert_pos = i
+                break
+            if i > 20:  # Safety limit
+                insert_pos = len(lines)
+                break
+        
+        lines.insert(insert_pos, new_entry.strip())
+        changelog_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def detect_pyproject_format(pyproject_path: Path) -> str:
+    """Detect the format of pyproject.toml (PEP 621 or Poetry).
+
+    Args:
+        pyproject_path: Path to pyproject.toml.
+
+    Returns:
+        "pep621" if [project] format, "poetry" if [tool.poetry] format, or "unknown".
+    """
+    with open(pyproject_path, "rb") as f:
+        data = tomllib.load(f)
+
+    if "project" in data and "version" in data["project"]:
+        return "pep621"
+    if "tool" in data and "poetry" in data["tool"] and "version" in data["tool"]["poetry"]:
+        return "poetry"
+    return "unknown"
 
 
 def update_pyproject_version(pyproject_path: Path, new_version: str) -> None:
     """Update the version in pyproject.toml using cursor-agent.
 
+    Supports both PEP 621 format ([project]) and Poetry format ([tool.poetry]).
+
     Args:
         pyproject_path: Path to pyproject.toml.
         new_version: The new version to set.
     """
+    # Detect format to provide correct prompt
+    format_type = detect_pyproject_format(pyproject_path)
+    
+    if format_type == "pep621":
+        section = "[project]"
+    elif format_type == "poetry":
+        section = "[tool.poetry]"
+    else:
+        # Try to detect from file content
+        content = pyproject_path.read_text(encoding="utf-8")
+        if "[tool.poetry]" in content:
+            section = "[tool.poetry]"
+            format_type = "poetry"
+        else:
+            section = "[project]"
+            format_type = "pep621"
+
     prompt = f"""Update the version field in this pyproject.toml file to "{new_version}".
-Only change the version = "..." line under [project].
+Only change the version = "..." line under {section}.
 Keep all other content exactly the same."""
 
-    run_cursor_agent(prompt, pyproject_path)
+    try:
+        output = run_cursor_agent(prompt, pyproject_path)
+        # Verify the file was updated by checking if it contains the new version
+        if pyproject_path.exists():
+            content = pyproject_path.read_text(encoding="utf-8")
+            if f'version = "{new_version}"' not in content:
+                # Fallback: manually update the version
+                raise RuntimeError("cursor-agent did not update version correctly")
+    except RuntimeError as e:
+        # Fallback: manually update the version
+        print(f"Warning: cursor-agent failed, updating version manually: {e}")
+        content = pyproject_path.read_text(encoding="utf-8")
+        
+        # Update based on detected format
+        if format_type == "poetry":
+            # Update [tool.poetry] version
+            pattern = r'^(\s*)version = "[^"]+"'
+            replacement = f'\\1version = "{new_version}"'
+            # Try to match within [tool.poetry] section
+            lines = content.split("\n")
+            in_poetry_section = False
+            for i, line in enumerate(lines):
+                if line.strip().startswith("[tool.poetry]"):
+                    in_poetry_section = True
+                elif in_poetry_section and line.strip().startswith("version = "):
+                    # Extract indentation
+                    indent = len(line) - len(line.lstrip())
+                    lines[i] = " " * indent + f'version = "{new_version}"'
+                    break
+                elif in_poetry_section and line.strip().startswith("[") and not line.strip().startswith("[tool."):
+                    # Left poetry section without finding version
+                    break
+            new_content = "\n".join(lines)
+        else:
+            # Update [project] version (PEP 621)
+            pattern = r'^(\s*)version = "[^"]+"'
+            replacement = f'\\1version = "{new_version}"'
+            new_content = re.sub(pattern, replacement, content, flags=re.MULTILINE)
+            
+            if new_content == content:
+                # If regex didn't match, try a simpler approach
+                lines = content.split("\n")
+                for i, line in enumerate(lines):
+                    if line.strip().startswith("version = "):
+                        # Extract indentation
+                        indent = len(line) - len(line.lstrip())
+                        lines[i] = " " * indent + f'version = "{new_version}"'
+                        break
+                new_content = "\n".join(lines)
+        
+        pyproject_path.write_text(new_content, encoding="utf-8")
 
 
 def stage_files(files: list[Path]) -> None:
@@ -386,10 +586,27 @@ def main() -> int:
         else:
             print("Updating CHANGELOG.md...")
             update_changelog(changelog_path, new_version, commit_info, current_version)
+        
+        # Verify changelog was created/updated
+        if not changelog_path.exists():
+            print("Error: CHANGELOG.md was not created")
+            return 1
+        if f"[{new_version}]" not in changelog_path.read_text(encoding="utf-8"):
+            print(f"Warning: CHANGELOG.md may not contain version {new_version}")
         files_to_stage.append(changelog_path)
 
         print("Updating pyproject.toml version...")
         update_pyproject_version(pyproject_path, new_version)
+        
+        # Verify pyproject.toml was updated
+        try:
+            updated_version = get_current_version(pyproject_path)
+            if updated_version != new_version:
+                print(f"Error: pyproject.toml version is {updated_version}, expected {new_version}")
+                return 1
+        except (KeyError, FileNotFoundError) as e:
+            print(f"Error: Failed to verify pyproject.toml update: {e}")
+            return 1
         files_to_stage.append(pyproject_path)
 
     except RuntimeError as e:
@@ -398,7 +615,11 @@ def main() -> int:
 
     # Stage modified files
     print("Staging modified files...")
-    stage_files(files_to_stage)
+    try:
+        stage_files(files_to_stage)
+    except subprocess.CalledProcessError as e:
+        print(f"Error staging files: {e}")
+        return 1
 
     print(f"Successfully updated to version {new_version}")
     return 0
